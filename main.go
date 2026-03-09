@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"go-ai-playground/internal/db"
+	"go-ai-playground/internal/weather"
 )
 
 var weatherDB *db.Database
@@ -95,6 +97,55 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(HistoryResponse{Records: records})
 }
 
+// fetchHandler 获取实时天气（调用 Open-Meteo API）
+func fetchHandler(w http.ResponseWriter, r *http.Request) {
+	city := strings.ToLower(r.URL.Query().Get("city"))
+	if city == "" {
+		city = "beijing" // 默认北京
+	}
+
+	data, err := weather.FetchWeather(city)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to fetch weather: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 同时保存到数据库
+	id, _ := weatherDB.SaveWeather(data.City, data.Temperature, data.Humidity)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":          id,
+		"city":        data.City,
+		"temperature": data.Temperature,
+		"humidity":    data.Humidity,
+		"recorded_at": data.RecordedAt,
+		"source":      "Open-Meteo API",
+	})
+}
+
+// multiFetchHandler 并发获取多城市天气
+func multiFetchHandler(w http.ResponseWriter, r *http.Request) {
+	cities := []string{"beijing", "shanghai", "guangzhou", "shenzhen"}
+
+	results, err := weather.FetchWeatherConcurrent(cities)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Partial failure: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 批量保存
+	for _, data := range results {
+		weatherDB.SaveWeather(data.City, data.Temperature, data.Humidity)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"cities": results,
+		"count":  len(results),
+	})
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -104,13 +155,17 @@ func main() {
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/weather", weatherHandler)
 	http.HandleFunc("/history", historyHandler)
+	http.HandleFunc("/api/fetch", fetchHandler)         // NEW: 实时天气
+	http.HandleFunc("/api/multi-fetch", multiFetchHandler) // NEW: 并发多城市
 
 	addr := ":" + port
 	fmt.Printf("🚀 Server starting on %s\n", addr)
 	fmt.Println("Endpoints:")
-	fmt.Println("  GET  /health      - Health check")
-	fmt.Println("  POST /weather     - Save weather data")
-	fmt.Println("  GET  /history     - Get historical records")
+	fmt.Println("  GET  /health           - Health check")
+	fmt.Println("  POST /weather          - Save weather data (manual)")
+	fmt.Println("  GET  /history          - Get historical records")
+	fmt.Println("  GET  /api/fetch        - Fetch real-time weather (Open-Meteo)")
+	fmt.Println("  GET  /api/multi-fetch  - Fetch multiple cities (concurrent)")
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal(err)
