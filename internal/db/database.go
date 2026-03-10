@@ -61,6 +61,9 @@ func (d *Database) Close() error {
 
 // SaveWeather 保存天气记录
 func (d *Database) SaveWeather(city string, temperature float64, humidity int) (int64, error) {
+	if city == "" {
+		return 0, fmt.Errorf("city name cannot be empty")
+	}
 	query := `INSERT INTO weather_records (city, temperature, humidity) VALUES (?, ?, ?)`
 	result, err := d.db.Exec(query, city, temperature, humidity)
 	if err != nil {
